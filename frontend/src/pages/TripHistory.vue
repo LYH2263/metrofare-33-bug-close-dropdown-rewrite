@@ -15,7 +15,7 @@ onMounted(async () => { rows.value = (await getJSON('/api/history')).items.map(p
     <table>
       <tr><th>#</th><th>请求</th><th>实际使用</th><th>站数</th><th>票价</th><th>时间</th></tr>
       <tr v-for="h in rows" :key="h.id">
-        <td>#{{ h.id }}</td>
+        <td><router-link :to="`/history/${h.id}`">#{{ h.id }}</router-link></td>
         <td>{{ h.input.start }} → {{ h.input.end }}</td>
         <td>
           {{ h.result.actual_start ?? h.result.start }} → {{ h.result.actual_end ?? h.result.end }}

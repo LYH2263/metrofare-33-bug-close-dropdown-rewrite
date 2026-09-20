@@ -47,6 +47,9 @@ def test_close_rejects_closed_divert_target():
             s.close_station("A3", "B1", "施工")  # B1 not adjacent to A3 anyway
         with pytest.raises(ValueError, match="改到站已封闭"):
             s.close_station("A2", "B1", "施工")
+        # 被拒绝的封闭不得在库里留下任何痕迹
+        assert s.station("A3")["closed"] == 0 and s.station("A3")["divert_to"] is None
+        assert s.station("A2")["closed"] == 0 and s.station("A2")["divert_to"] is None
 
 
 def test_close_rejects_non_adjacent_divert():
@@ -87,6 +90,17 @@ def test_quote_diverts_and_reports_original_actual_path():
         assert q["hops"] == 1 and q["fare"] == 3.0
 
 
+def test_quote_diverts_closed_start_to_neighbor():
+    with make_service() as s:
+        s.close_station("A3", "A2", "施工")
+        q = s.quote("A3", "B2", persist=False)
+        assert q["reachable"] and q["diverted"]
+        assert q["start"] == "A3"  # 下拉里选出的原编码
+        assert q["actual_start"] == "A2"  # 实际从邻站出发
+        assert q["path"] == ["A2", "B1", "B2"]
+        assert q["hops"] == 2 and q["fare"] == 3.0
+
+
 def test_unclose_restores_original_path():
     with make_service() as s:
         s.close_station("A3", "A2", "施工")
@@ -120,6 +134,38 @@ def test_persisted_record_keeps_actual_codes_after_unclose():
         runs = s.history()
         rec = next(r for r in runs if r["id"] == q["run_id"])
         result = json.loads(rec["result_json"])
-        assert result["end"] == "A3"  # 原始编码
+        payload = json.loads(rec["input_json"])
+        assert payload["start"] == "A1" and payload["end"] == "A3"  # 请求的原编码
+        assert result["start"] == "A1" and result["end"] == "A3"  # 原始编码
+        assert result["actual_start"] == "A1"
         assert result["actual_end"] == "A2"  # 当时实际用的编码不被改写
         assert result["path"] == ["A1", "A2"]
+
+
+def test_persisted_diverted_start_keeps_actual_code():
+    with make_service() as s:
+        s.close_station("A3", "A2", "施工")
+        # 用下拉里的封闭原编码写入
+        q = s.quote("A3", "B2", persist=True)
+        assert q["actual_start"] == "A2"
+        rec = s.run(q["run_id"])
+        payload = json.loads(rec["input_json"])
+        result = json.loads(rec["result_json"])
+        assert payload["start"] == "A3"  # 起点仍是用户选的封闭站编码
+        assert result["actual_start"] == "A2"  # 实际编码是邻站那一版
+        assert result["path"] == ["A2", "B1", "B2"]
+        # 解除封闭后，这条老记录按编号打开仍是写入当时的版本
+        s.unclose_station("A3")
+        rec2 = s.run(q["run_id"])
+        result2 = json.loads(rec2["result_json"])
+        assert result2["actual_start"] == "A2"
+        assert result2["path"] == ["A2", "B1", "B2"]
+        # 按原编码的新试算回到封闭前路径
+        fresh = s.quote("A3", "B2", persist=False)
+        assert not fresh["diverted"] and fresh["actual_start"] == "A3"
+        assert fresh["path"] == ["A3", "A2", "B1", "B2"]
+
+
+def test_run_by_id_missing():
+    with make_service() as s:
+        assert s.run(999) is None

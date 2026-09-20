@@ -1,5 +1,3 @@
-import json
-
 from app.db import connect
 from app.engines.diversion import resolve_actual
 from app.engines.route_quote import quote_route
@@ -24,7 +22,9 @@ class MetroService:
         self.close()
 
     def stations(self, include_closed: bool = False):
-        return stations_repo.list_all(self._conn)
+        if include_closed:
+            return stations_repo.list_all(self._conn)
+        return stations_repo.list_open(self._conn)
 
     def station(self, code: str):
         return stations_repo.get_by_code(self._conn, code)
@@ -57,27 +57,7 @@ class MetroService:
         if not st["closed"]:
             raise ValueError("站点未封闭")
         stations_repo.set_open(self._conn, code)
-        for row in runs_repo.list_recent(self._conn, 200):
-            try:
-                result = json.loads(row["result_json"])
-                payload = json.loads(row["input_json"])
-            except Exception:
-                continue
-            changed = False
-            if result.get("actual_start") and payload.get("start") == code:
-                result["actual_start"] = code
-                result["start"] = code
-                changed = True
-            if result.get("actual_end") and payload.get("end") == code:
-                result["actual_end"] = code
-                result["end"] = code
-                changed = True
-            if changed:
-                self._conn.execute(
-                    "UPDATE calc_runs SET result_json=? WHERE id=?",
-                    (json.dumps(result, ensure_ascii=False), row["id"]),
-                )
-                self._conn.commit()
+        # 不触碰任何历史试算记录：写入当时定稿的实际编码与途经保持原样。
         return stations_repo.get_by_code(self._conn, code)
 
     def edges(self):
@@ -109,14 +89,16 @@ class MetroService:
         }
         run_id = None
         if persist and payload["reachable"]:
-            stored = dict(payload)
-            stored["actual_start"] = start
-            stored["actual_end"] = end
-            run_id = runs_repo.insert(self._conn, "quote", {"start": start, "end": end}, stored)
+            # 落库即定稿：保存写入当时实际用于计算的编码与途经，
+            # 之后解除封闭等状态变化一律不得改写历史记录。
+            run_id = runs_repo.insert(self._conn, "quote", {"start": start, "end": end}, payload)
         return {"run_id": run_id, **payload}
 
     def history(self, limit=50):
         return runs_repo.list_recent(self._conn, limit)
+
+    def run(self, run_id: int):
+        return runs_repo.get_by_id(self._conn, run_id)
 
     def dashboard(self):
         st = stations_repo.list_all(self._conn)
