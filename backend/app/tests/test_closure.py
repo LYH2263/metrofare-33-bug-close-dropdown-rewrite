@@ -123,3 +123,39 @@ def test_persisted_record_keeps_actual_codes_after_unclose():
         assert result["end"] == "A3"  # 原始编码
         assert result["actual_end"] == "A2"  # 当时实际用的编码不被改写
         assert result["path"] == ["A1", "A2"]
+
+
+def test_persisted_input_keeps_closed_code_but_result_uses_divert():
+    # 用下拉里仍可选的封闭站原编码写入：请求留原编码，实际编码与途经是邻站版本
+    with make_service() as s:
+        s.close_station("A3", "A2", "施工")
+        q = s.quote("A1", "A3", persist=True)
+        rec = s.history_run(q["run_id"])
+        payload = json.loads(rec["input_json"])
+        result = json.loads(rec["result_json"])
+        assert payload == {"start": "A1", "end": "A3"}
+        assert result["actual_end"] == "A2"
+        assert result["path"] == ["A1", "A2"]
+        assert result["diverted"] is True
+
+
+def test_quote_diverts_closed_start():
+    with make_service() as s:
+        s.close_station("A1", "A2", "施工")
+        q = s.quote("A1", "B2", persist=False)
+        assert q["diverted"]
+        assert q["start"] == "A1" and q["actual_start"] == "A2"
+        assert q["path"] == ["A2", "B1", "B2"]
+        assert q["hops"] == 2 and q["fare"] == 3.0
+
+
+def test_rejected_close_leaves_no_closure_in_db():
+    with make_service() as s:
+        s.close_station("B1", "A2", "施工")
+        with pytest.raises(ValueError):
+            s.close_station("A3", "B1", "施工")
+        row = s.station("A3")
+        assert row["closed"] == 0
+        assert row["divert_to"] is None
+        assert row["closed_reason"] is None
+
